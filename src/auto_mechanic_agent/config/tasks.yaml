@@ -1,0 +1,70 @@
+parse_problem_task:
+  description: |
+    Take the user's raw input "{problem}" and return a cleaned, concise summary
+    of the issue that needs to be solved.
+  expected_output: |
+    A single sentence summarizing what needs to be solved.
+  agent: text_parser
+
+parse_manual_request_task:
+  description: |
+    From the user's problem summary "{context.parse_problem_task}", extract the
+    vehicle's make, model, and year.
+  expected_output: |
+    A JSON object with keys "make", "model", and "year", e.g.:
+    {"make":"Toyota","model":"Camry","year":"2006"}
+  agent: text_parser
+  depends_on: [parse_problem_task]
+
+lookup_manual_task:
+  description: |
+    Use the `query_manifest` tool to fetch the manual bundle URL for
+    {context.parse_manual_request_task.make}, {context.parse_manual_request_task.model},
+    {context.parse_manual_request_task.year}.
+  expected_output: |
+    A single string containing the ZIP download URL.
+  agent: mechanic_expert
+  depends_on: [parse_manual_request_task]
+
+download_and_unzip_task:
+  description: |
+    Download the ZIP from "{context.lookup_manual_task}" and unzip it under
+    knowledge/manuals/<make>/<model>/<year>/. Return the list of extracted PDF paths.
+  expected_output: |
+    A JSON array of local file paths for the extracted PDFs.
+  agent: mechanic_expert
+  depends_on: [lookup_manual_task]
+
+generate_solution_task:
+  description: |
+    Given the summarized problem "{context.parse_problem_task}" and the knowledge
+    from the vehicle manual, produce a full, detailed, step-by-step solution.
+    **Requirements**:
+      - Use numbered steps.
+      - Include any tools or materials needed.
+      - Provide safety tips or troubleshooting notes where relevant.
+  expected_output: |
+    A Markdown-formatted step-by-step guide.
+  agent: mechanic_expert
+  depends_on: [parse_problem_task, download_and_unzip_task]
+
+format_for_pdf_task:
+  description: |
+    Convert the enriched Markdown (with `![…](…)` tags) into HTML
+    (`<h1>`, `<p>`, `<ol>`, `<img src="…">`, etc.). Ensure all images/PDF pages
+    are properly referenced.
+  expected_output: |
+    A string of HTML including `<img>` tags (for PDF pages) or `<embed>` tags.
+  agent: text_parser
+  depends_on: [generate_solution_task]
+
+generate_pdf_task:
+  description: |
+    Take the HTML from "{context.format_for_pdf_task}" and use a PDF rendering tool
+    to produce a PDF. Return the binary PDF as a downloadable file, named
+    according to the make, model, and year.
+  expected_output: |
+    A downloadable PDF file.
+  agent: pdf_creator
+  depends_on: [format_for_pdf_task]
+
