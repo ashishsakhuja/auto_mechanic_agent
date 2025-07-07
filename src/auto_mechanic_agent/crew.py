@@ -45,7 +45,7 @@ class AutoMechanicAgent():
         """Provides expert advice on car issues"""
         return Agent(
             config=self.agents_config["mechanic_expert"],
-            tools=[QueryManifestTool(), WebScrapeTool(), ManualDownloaderTool()],
+            tools=[],  # QueryManifestTool(), WebScrapeTool(), ManualDownloaderTool()
             verbose=True,
         )
 
@@ -61,13 +61,6 @@ class AutoMechanicAgent():
     def parse_problem_task(self) -> Task:
         return Task(
             config=self.tasks_config["parse_problem_task"],
-        )
-
-    @task
-    def lookup_manual_task(self) -> Task:
-        return Task(
-            config=self.tasks_config["lookup_manual_task"],
-            tools=[QueryManifestTool(), WebScrapeTool(), ManualDownloaderTool()],
         )
 
     @task
