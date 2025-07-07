@@ -1,3 +1,4 @@
+# crew.py
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
@@ -7,6 +8,8 @@ import logging
 from auto_mechanic_agent.tools.custom_tool import PDFCreatorTool
 from auto_mechanic_agent.tools.custom_tool import ImageGenTool
 from auto_mechanic_agent.tools.custom_tool import QueryManifestTool
+from auto_mechanic_agent.tools.custom_tool import WebScrapeTool
+from auto_mechanic_agent.tools.custom_tool import ManualDownloaderTool
 
 load_dotenv()
 
@@ -17,7 +20,11 @@ class AutoMechanicAgent():
 
     agents: List[BaseAgent]
     tasks: List[Task]
-    tools = [PDFCreatorTool(), ImageGenTool(), QueryManifestTool()]
+    tools = [PDFCreatorTool(),
+             ImageGenTool(),
+             QueryManifestTool(),
+             WebScrapeTool(),
+             ManualDownloaderTool()]
 
 
     def __init__(self):
@@ -38,7 +45,7 @@ class AutoMechanicAgent():
         """Provides expert advice on car issues"""
         return Agent(
             config=self.agents_config["mechanic_expert"],
-            tools=[QueryManifestTool()],
+            tools=[QueryManifestTool(), WebScrapeTool(), ManualDownloaderTool()],
             verbose=True,
         )
 
@@ -57,6 +64,13 @@ class AutoMechanicAgent():
         )
 
     @task
+    def lookup_manual_task(self) -> Task:
+        return Task(
+            config=self.tasks_config["lookup_manual_task"],
+            tools=[QueryManifestTool(), WebScrapeTool(), ManualDownloaderTool()],
+        )
+
+    @task
     def generate_solution_task(self) -> Task:
         return Task(
             config=self.tasks_config["generate_solution_task"],
@@ -72,7 +86,7 @@ class AutoMechanicAgent():
     def generate_pdf_task(self) -> Task:
         return Task(
             config=self.tasks_config["generate_pdf_task"],
-            tools=[PDFCreatorTool()],
+            tools=[PDFCreatorTool()]  # PDFCreatorTool()
         )
 
     @crew
@@ -83,6 +97,6 @@ class AutoMechanicAgent():
             agents=self.agents,
             tasks=self.tasks,
             process=Process.sequential,
-            tools=[PDFCreatorTool(), QueryManifestTool()],
+            tools=[PDFCreatorTool(), QueryManifestTool(), WebScrapeTool()],
             verbose=True,
         )

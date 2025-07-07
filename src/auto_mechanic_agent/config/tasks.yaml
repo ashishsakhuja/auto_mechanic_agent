@@ -21,24 +21,20 @@ lookup_manual_task:
     Use the `query_manifest` tool to fetch the manual bundle URL for
     {context.parse_manual_request_task.make}, {context.parse_manual_request_task.model},
     {context.parse_manual_request_task.year}.
+    
+    If there are no results found, try changing the vehicle model to something similar (Ex: Camry, Camry LE, 2006). 
+    Test similar models 2-3 times and use result if found.
+    Using the `ManualDownloaderTool` download the file and scrape the manual content from the URL.
+    Use given URL and scrape for vehicle information regarding the problem: {problem}
   expected_output: |
-    A single string containing the ZIP download URL.
+    A string of relevant manual content fetched and parsed using ManualDownloaderTool, or a message if unavailable.
   agent: mechanic_expert
   depends_on: [parse_manual_request_task]
-
-download_and_unzip_task:
-  description: |
-    Download the ZIP from "{context.lookup_manual_task}" and unzip it under
-    knowledge/manuals/<make>/<model>/<year>/. Return the list of extracted PDF paths.
-  expected_output: |
-    A JSON array of local file paths for the extracted PDFs.
-  agent: mechanic_expert
-  depends_on: [lookup_manual_task]
 
 generate_solution_task:
   description: |
     Given the summarized problem "{context.parse_problem_task}" and the knowledge
-    from the vehicle manual, produce a full, detailed, step-by-step solution.
+    from the vehicle manual "{context.lookup_manual_task}", produce a full, detailed, step-by-step solution.
     **Requirements**:
       - Use numbered steps.
       - Include any tools or materials needed.
@@ -46,7 +42,7 @@ generate_solution_task:
   expected_output: |
     A Markdown-formatted step-by-step guide.
   agent: mechanic_expert
-  depends_on: [parse_problem_task, download_and_unzip_task]
+  depends_on: [parse_manual_request_task, lookup_manual_task]
 
 format_for_pdf_task:
   description: |

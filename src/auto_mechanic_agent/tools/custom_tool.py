@@ -1,3 +1,4 @@
+# custom_tool.py
 import os
 import re
 import uuid
@@ -7,11 +8,11 @@ from typing import Type, Optional
 import duckdb
 from typing import Dict, List
 from pathlib import Path
-
+from bs4 import BeautifulSoup
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
 from openai import OpenAI
-
+from utils.manual_downloader import fetch_and_parse_manual
 from reportlab.platypus import (
     SimpleDocTemplate, Paragraph, Spacer,
     ListFlowable, ListItem, Image as RLImage
@@ -209,3 +210,49 @@ class QueryManifestTool(BaseTool):
         df = conn.execute(sql, [make, model, year]).fetchdf()
         # return as a list of dicts
         return df.to_dict(orient="records")
+
+# ──────────────────────────────── Web Scrape Tool ───────────────────────────────────────
+class WebScrapeInput(BaseModel):
+    url: str = Field(..., description="The URL of the manual or web page to scrape")
+
+class WebScrapeTool(BaseTool):
+    name: str = "web_scrape"
+    description: str = (
+        "Fetch and extract visible text from a manual or web page. "
+        "Strips out scripts/styles and returns main text content for analysis."
+    )
+    args_schema: Type[BaseModel] = WebScrapeInput
+
+    def _run(self, url: str) -> str:
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
+                tag.decompose()
+            text = ' '.join(soup.stripped_strings)
+            return text[:8000]  # adjust this limit as needed
+        except Exception as e:
+            return f"ERROR: Failed to scrape {url}: {str(e)}"
+
+# ──────────────────────────────── Manual Tool ───────────────────────────────────────
+
+
+class ManualDownloaderTool(BaseTool):
+    name: str = "ManualDownloaderTool"
+    description: str = "Download and parse car manual from URL (PDF or ZIP)"
+
+    def _run(self, bundle_url: str):
+        # if it looks like a directory (no .zip/.pdf), scrape for the real link
+        if not bundle_url.lower().endswith(('.zip', '.pdf')):
+            resp = requests.get(bundle_url, timeout=10)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            # find first archive link
+            link = soup.find("a", href=re.compile(r"\.(zip|pdf)$", re.IGNORECASE))
+            if not link:
+                return f"ERROR: no .zip or .pdf link found on {bundle_url}"
+            bundle_url = requests.compat.urljoin(bundle_url, link["href"])
+
+        # now bundle_url is a .zip or .pdf — use your existing logic
+        return fetch_and_parse_manual(bundle_url)

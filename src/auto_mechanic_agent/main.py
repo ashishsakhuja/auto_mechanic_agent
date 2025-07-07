@@ -18,7 +18,7 @@ def run():
     Run the crew.
     """
     inputs = {
-        'problem': 'My 2002 Honda Civic is making a strange noise when I accelerate. What could be the issue?',
+        'problem': 'how to install new brake disk in a 2015 Honda Accord'
     }
     
     try:
