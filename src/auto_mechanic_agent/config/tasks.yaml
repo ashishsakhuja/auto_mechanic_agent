@@ -1,43 +1,119 @@
 parse_problem_task:
   description: |
-    Take the user's raw input "{problem}" and return a cleaned, concise summary
+    Take the user’s raw input "{problem}" and return a cleaned, concise summary
     of the issue that needs to be solved.
+    Do not change meaning, add context, or include quotes—only clean up the wording.
+    Output exactly one sentence.
   expected_output: |
-    A single sentence summarizing what needs to be solved.
+    One concise sentence summarizing the user’s problem.
   agent: text_parser
 
+find_manual_sql_task:
+  description: |
+    From the summary in "{context.parse_problem_task}", extract the vehicle make, model, and year.
+    Emit exactly one DuckDB SQL statement in this form:
+
+    ```sql
+    SELECT path
+      FROM manuals
+     WHERE make='Toyota'
+       AND model='Camry'
+       AND year=2011;
+    ```
+
+    Do not reference any other columns or add any extra filters.
+  expected_output: |
+    ```sql
+    SELECT path
+      FROM manuals
+     WHERE make='Toyota'
+       AND model='Camry'
+       AND year=2011;
+    ```
+  agent: manual_sql
+  depends_on:
+    - parse_problem_task
+
+
+lookup_manual_task:
+  description: |
+    Using the SQL from "{context.find_manual_sql_task}", load and chunk the returned PDF(s)
+    and retrieve the most relevant passages for "{context.parse_problem_task}".
+    Return a Markdown-formatted excerpt containing that section.
+  expected_output: |
+    A Markdown excerpt from the manual with the relevant section.
+  agent: manual_qa_agent
+  depends_on:
+    - find_manual_sql_task
 
 generate_solution_task:
   description: |
-    Given the summarized problem "{context.parse_problem_task}" and the knowledge
-    from the vehicle manual "{context.lookup_manual_task}", produce a full, detailed, step-by-step solution.
-    **Requirements**:
-      - Use paragraphs when needed
-      - Use numbered steps.
-      - Include any tools or materials needed.
-      - Provide safety tips or troubleshooting notes where relevant.
+    Given the summary "{context.parse_problem_task}" and manual excerpt
+    "{context.lookup_manual_task}", produce a detailed, step-by-step solution.
+    - Numbered steps
+    - List required tools and materials
+    - Include safety tips and troubleshooting notes
   expected_output: |
-    A Markdown-formatted step-by-step guide.
+    A Markdown step-by-step guide.
   agent: mechanic_expert
-  depends_on: [parse_problem_task]
+  depends_on:
+    - parse_problem_task
+    - lookup_manual_task
 
-format_for_pdf_task:
+enrichment_task:
   description: |
-    Convert the enriched Markdown (with `![…](…)` tags) into HTML
-    (`<h1>`, `<p>`, `<ol>`, `<img src="…">`, etc.). Ensure all images/PDF pages
-    are properly referenced.
+    Enrich the solution from "{context.generate_solution_task}" with additional context:
+    - Analyze the solution and problem "{problem}" and determine estimated time to complete and total cost.
+    - Use the webscrape tool to find where to buy any required parts/materials/tools for the cheapest prices
   expected_output: |
-    A string of HTML including `<img>` tags (for PDF pages) or `<embed>` tags.
-  agent: text_parser
-  depends_on: [generate_solution_task]
+    A Markdown document with enriched content, explicitly mention estimated time to complete and total cost at the top.
+  agent: mechanic_supervisor
+  depends_on:
+    - generate_solution_task
 
-generate_pdf_task:
+format_guide_task:
   description: |
-    Take the HTML from "{context.format_for_pdf_task}" and use a PDF rendering tool
-    to produce a PDF. Return the binary PDF as a downloadable file, named
-    according to the make, model, and year.
+    Format the enriched solution from "{context.enrichment_task}" into a structured JSON format.
+    Ensure it includes:
+    - Title
+    - Steps
+    - Tools and materials
+    - Safety tips
+    - Troubleshooting notes
+    - Estimated time to complete
+    - Total cost of parts/materials/tools
   expected_output: |
-    A downloadable PDF file.
-  agent: pdf_creator
-  depends_on: [format_for_pdf_task]
+    A STRUCTURED JSON OUTPUT EXACTLY IN THIS FORMAT:
+    
+    Ensure the solution is correct, comprehensive, and follows best practices for automotive repairs. 
+    Convert Markdown formatted solution into a structured JSON format like this:
+    {
+    "title": "Solution Title",
+        "Estimated_Time": "___ hours/minutes",
+        "Estimated_Cost": "___ dollars",
+        "Tools": ["Tool1", "Tool2", ...],
+        "materials": ["Material1", "Material2", ...],
+        "steps": [
+            {
+                "step_number": 1,
+                "description": "Step description",
+                "tools_needed": ["Tool1", "Tool2"],
+                "materials_needed": ["Material1"],
+                "safety_tips": ["Safety tip 1", "Safety tip 2"],
+                "troubleshooting_notes": ["Troubleshooting note 1"]
+            },
+            {
+                "step_number": 2,
+                "description": "Next step description",
+                "tools_needed": ["Tool3"],
+                "materials_needed": ["Material2"],  
+                "safety_tips": ["Safety tip 3"],
+                "troubleshooting_notes": []
+            }
+            ...
+        ],
+        "summary": "Overall summary of the solution"
+  agent: formatter_agent
+  depends_on:
+    - enrichment_task
 

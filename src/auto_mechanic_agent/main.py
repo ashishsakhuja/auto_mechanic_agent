@@ -18,9 +18,9 @@ def run():
     Run the crew.
     """
     inputs = {
-        'problem': 'how to install new brake disk in a 2015 Honda Accord'
+        'problem': 'how to install new brake disk in a 2012 Toyota Camry?',
     }
-    
+
     try:
         result = AutoMechanicAgent().crew().kickoff(inputs=inputs)
         print(result)
@@ -60,7 +60,7 @@ def test():
         "topic": "AI LLMs",
         "current_year": str(datetime.now().year)
     }
-    
+
     try:
         AutoMechanicAgent().crew().test(n_iterations=int(sys.argv[1]), eval_llm=sys.argv[2], inputs=inputs)
 

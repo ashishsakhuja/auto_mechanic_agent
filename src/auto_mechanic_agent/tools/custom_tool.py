@@ -1,258 +1,108 @@
 # custom_tool.py
+
 import os
-import re
-import uuid
-import requests
-from io import BytesIO
-from typing import Type, Optional
+from typing import Any
 import duckdb
-from typing import Dict, List
-from pathlib import Path
-from bs4 import BeautifulSoup
+import pandas as pd
 from crewai.tools import BaseTool
 from pydantic import BaseModel, Field
-from openai import OpenAI
-from utils.manual_downloader import fetch_and_parse_manual
-from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer,
-    ListFlowable, ListItem, Image as RLImage
-)
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib.pagesizes import letter
-
-# Determine the tests directory relative to this file
-PROJECT_ROOT = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), '..', '..', '..')
-)
-TESTS_DIR = os.path.join(PROJECT_ROOT, 'tests')
-os.makedirs(TESTS_DIR, exist_ok=True)
-
-# ─────────────────────────── Image Generation Tool ──────────────────────────
-
-_client = OpenAI()
-
-class ImageGenInput(BaseModel):
-    prompt: str = Field(..., description="A text prompt to generate your image")
-    size: Optional[str] = Field("512x512", description="Image size, e.g. 256x256 or 512x512")
-
-class ImageGenTool(BaseTool):
-    name: str = "generate_image"
-    description: str = "Generate an image from a text prompt via OpenAI and return the local file path."
-    args_schema: Type[BaseModel] = ImageGenInput
-
-    def _run(self, prompt: str, size: str = "512x512") -> str:
-        resp = _client.images.generate(prompt=prompt, size=size, n=1)
-        url = resp.data[0].url
-        img_bytes = requests.get(url).content
-
-        filename = f"generated_image_{uuid.uuid4().hex}.png"
-        out_path = os.path.join(TESTS_DIR, filename)
-        with open(out_path, "wb") as f:
-            f.write(img_bytes)
-
-        return out_path
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_community.chat_models import ChatOpenAI
+from langchain.chains import RetrievalQA
+from knowledge.vehicle_knowledge_source import ManualIndex
 
 
-# ───────────────────────────── PDF Creation Tool ────────────────────────────
+# ──────────────────────────────── Manual Q&A Tool ────────────────────────────────
 
-class PDFCreatorInput(BaseModel):
-    html: str = Field(..., description="HTML (including <img> tags) to render")
-    output_path: Optional[str] = Field(
-        None,
-        description="Where to write the PDF; defaults to the tests folder"
+class ManualQATool(BaseTool):
+    name: str = Field(
+        "manual_qa",
+        description="The unique name of this tool."
+    )
+    description: str = Field(
+        "Given a repair query, pick the right PDF via ManualIndex and answer via RetrievalQA.",
+        description="A short description of what this tool does."
     )
 
-class PDFCreatorTool(BaseTool):
-    name: str = "pdf_creator"
-    description: str = "Render HTML (h1,h2,p,ol,ul,img) into a PDF via ReportLab."
-    args_schema: Type[BaseModel] = PDFCreatorInput
-
-    def _run(self, html: str, output_path: Optional[str] = None) -> str:
-        # --- Resolve output_path ---
-        if output_path:
-            output_path = os.path.expanduser(output_path)
-        else:
-            filename = f"solution_{uuid.uuid4().hex}.pdf"
-            output_path = os.path.join(TESTS_DIR, filename)
-
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-        # 1) Convert any Markdown-style images into <img> tags
-        html = re.sub(
-            r'!\[(?P<alt>[^\]]*)\]\((?P<src>[^)]+)\)',
-            r'<img src="\g<src>" alt="\g<alt>"/>',
-            html
-        )
-        # 2) Strip out any <br> tags
-        html = re.sub(r'<br\s*/?>', ' ', html, flags=re.IGNORECASE)
-
-        styles = getSampleStyleSheet()
-        doc = SimpleDocTemplate(
-            output_path,
-            pagesize=letter,
-            rightMargin=40, leftMargin=40,
-            topMargin=60, bottomMargin=40,
-        )
-        flowables = []
-
-        # Embed each <img>; if it's a URL, download it first
-        img_re = re.compile(
-            r'<img\s+[^>]*?'
-            r'src=[\'\"](?P<src>[^\'\"]+)[\'\"]'
-            r'(?:[^>]*?width=[\'\"]?(?P<width>\d+)[\'\"]?)?'
-            r'(?:[^>]*?height=[\'\"]?(?P<height>\d+)[\'\"]?)?'
-            r'[^>]*?>',
-            re.IGNORECASE
-        )
-
-        def _embed(match):
-            src = match.group("src")
-            w = match.group("width")
-            h = match.group("height")
-
-            # If it's a remote URL, fetch it into a BytesIO
-            if src.lower().startswith(("http://", "https://")):
-                try:
-                    resp = requests.get(src)
-                    resp.raise_for_status()
-                    img_obj = BytesIO(resp.content)
-                except Exception:
-                    return ""  # skip this image
-            else:
-                # Otherwise treat as a local path
-                src = os.path.expanduser(src)
-                src = os.path.normpath(src)
-                if not os.path.isabs(src):
-                    src = os.path.abspath(src)
-                img_obj = src
-
-            try:
-                img = RLImage(
-                    img_obj,
-                    width=int(w) if w else None,
-                    height=int(h) if h else None
-                )
-                flowables.append(img)
-                flowables.append(Spacer(1, 12))
-            except Exception:
-                pass
-
-            return ""
-
-        html = img_re.sub(_embed, html)
-
-        # headings
-        for h1 in re.findall(r"<h1>(.*?)</h1>", html, re.DOTALL | re.IGNORECASE):
-            flowables.append(Paragraph(h1.strip(), styles["Heading1"]))
-            flowables.append(Spacer(1, 12))
-        for h2 in re.findall(r"<h2>(.*?)</h2>", html, re.DOTALL | re.IGNORECASE):
-            flowables.append(Paragraph(h2.strip(), styles["Heading2"]))
-            flowables.append(Spacer(1, 12))
-
-        # paragraphs
-        for p in re.findall(r"<p>(.*?)</p>", html, re.DOTALL | re.IGNORECASE):
-            flowables.append(Paragraph(p.strip(), styles["Normal"]))
-            flowables.append(Spacer(1, 12))
-
-        # lists
-        def extract_list(tag, bullet):
-            pattern = rf"<{tag}>(.*?)</{tag}>"
-            for block in re.findall(pattern, html, re.DOTALL | re.IGNORECASE):
-                items = re.findall(r"<li>(.*?)</li>", block, re.DOTALL | re.IGNORECASE)
-                lf = ListFlowable(
-                    [ListItem(Paragraph(it.strip(), styles["Normal"])) for it in items],
-                    bulletType=bullet
-                )
-                flowables.append(lf)
-                flowables.append(Spacer(1, 12))
-
-        extract_list("ol", "1")
-        extract_list("ul", "bullet")
-
-        doc.build(flowables)
-        return os.path.abspath(output_path)
-
-# ──────────────────────────────── Query Manifest Tool ───────────────────────────────────────
-
-HERE      = Path(__file__).resolve()
-REPO_ROOT = HERE.parents[3]  # .../src/auto_mechanic_agent/tools → up to repo root
-DB_PATH   = REPO_ROOT / "knowledge" / "manuals.duckdb"
-
-if not DB_PATH.exists():
-    raise FileNotFoundError(f"Couldn’t find DuckDB at {DB_PATH!r}")
-
-
-class QueryArgs(BaseModel):
-    make: str = Field(..., description="The vehicle make, e.g. Toyota")
-    model: str = Field(..., description="The vehicle model or a substring thereof, e.g. Camry")
-    year: str = Field(..., description="The model year, e.g. 2006")
-
-class QueryManifestTool(BaseTool):
-    name: str = "query_manifest"
-    description: str = (
-        "Generate and run a SQL query against the DuckDB `manifest` table to "
-        "find the bundle_url for a given make/model/year. "
-        "Columns: make TEXT, model TEXT, year TEXT, bundle_url TEXT."
+    # These become the tool's "arguments schema"
+    manual_index: ManualIndex = Field(
+        ..., description="Index object to locate the correct PDF"
     )
-    args_schema: Type[QueryArgs] = QueryArgs
-
-    def _run(self, make: str, model: str, year: str) -> List[Dict]:
-        # connect to the absolute path
-        conn = duckdb.connect(str(DB_PATH))
-        sql = """
-        SELECT bundle_url
-          FROM manifest
-         WHERE make = ?
-           AND model ILIKE '%' || ? || '%'
-           AND year = ?
-         LIMIT 1;
-        """
-        df = conn.execute(sql, [make, model, year]).fetchdf()
-        # return as a list of dicts
-        return df.to_dict(orient="records")
-
-# ──────────────────────────────── Web Scrape Tool ───────────────────────────────────────
-class WebScrapeInput(BaseModel):
-    url: str = Field(..., description="The URL of the manual or web page to scrape")
-
-class WebScrapeTool(BaseTool):
-    name: str = "web_scrape"
-    description: str = (
-        "Fetch and extract visible text from a manual or web page. "
-        "Strips out scripts/styles and returns main text content for analysis."
+    chunk_size: int = Field(
+        800, description="Chunk size for splitting PDF text"
     )
-    args_schema: Type[BaseModel] = WebScrapeInput
+    chunk_overlap: int = Field(
+        100, description="Overlap size for splitting"
+    )
+    top_k: int = Field(
+        4, description="How many chunks to retrieve from the vector store"
+    )
+    model_name: str = Field(
+        "gpt-4.1-mini", description="OpenAI model to use"
+    )
+    temperature: float = Field(
+        0.0, description="Temperature for the LLM"
+    )
 
-    def _run(self, url: str) -> str:
+    def _run(self, query: str) -> str:
+        # 1) find the best PDF
+        hits = self.manual_index.find_manuals(query, k=1)
+        if not hits:
+            return "Sorry, I couldn't find a matching manual."
+        pdf_path = hits[0].metadata["path"]
+
+        # 2) load & chunk
+        pages = PyPDFLoader(pdf_path).load()
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.chunk_size,
+            chunk_overlap=self.chunk_overlap
+        )
+        docs = splitter.split_documents(pages)
+
+        # 3) embed & vector‐store
+        embeddings = OpenAIEmbeddings()
+        vstore = Chroma.from_documents(docs, embeddings)
+
+        # 4) RetrievalQA
+        llm = ChatOpenAI(model=self.model_name, temperature=self.temperature)
+        qa = RetrievalQA.from_chain_type(
+            llm=llm,
+            chain_type="stuff",
+            retriever=vstore.as_retriever(search_kwargs={"k": self.top_k}),
+        )
+
+        return qa.run(query)
+
+    async def _arun(self, *args: Any, **kwargs: Any) -> str:
+        raise NotImplementedError("ManualQATool does not support async.")
+
+
+# ────────────────────────────── SQL Manual Lookup Tool ────────────────────────────
+
+class SQLManualTool(BaseTool):
+    name: str = Field(
+        "sql_manual",
+        description="The unique name of this tool."
+    )
+    description: str = Field(
+        "Run a SELECT against manuals.duckdb to find PDF paths.",
+        description="A short description of what this tool does."
+    )
+
+    def _run(self, query: str) -> str:
+        conn = duckdb.connect("manuals.duckdb", read_only=True)
         try:
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            for tag in soup(["script", "style", "noscript", "header", "footer", "nav"]):
-                tag.decompose()
-            text = ' '.join(soup.stripped_strings)
-            return text[:8000]  # adjust this limit as needed
-        except Exception as e:
-            return f"ERROR: Failed to scrape {url}: {str(e)}"
+            df: pd.DataFrame = conn.execute(query).fetch_df()
+        finally:
+            conn.close()
+        if df.empty:
+            return ""
+        return df.to_csv(index=False)
 
-# ──────────────────────────────── Manual Tool ───────────────────────────────────────
+    async def _arun(self, *args: Any, **kwargs: Any) -> str:
+        raise NotImplementedError("SQLManualTool does not support async.")
 
-
-class ManualDownloaderTool(BaseTool):
-    name: str = "ManualDownloaderTool"
-    description: str = "Download and parse car manual from URL (PDF or ZIP)"
-
-    def _run(self, bundle_url: str):
-        # if it looks like a directory (no .zip/.pdf), scrape for the real link
-        if not bundle_url.lower().endswith(('.zip', '.pdf')):
-            resp = requests.get(bundle_url, timeout=10)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-            # find first archive link
-            link = soup.find("a", href=re.compile(r"\.(zip|pdf)$", re.IGNORECASE))
-            if not link:
-                return f"ERROR: no .zip or .pdf link found on {bundle_url}"
-            bundle_url = requests.compat.urljoin(bundle_url, link["href"])
-
-        # now bundle_url is a .zip or .pdf — use your existing logic
-        return fetch_and_parse_manual(bundle_url)
+# ────────────────────────────── SQL Tool ──────────────────────────────

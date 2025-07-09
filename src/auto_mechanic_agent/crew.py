@@ -1,36 +1,41 @@
 # crew.py
+
 from crewai import Agent, Crew, Process, Task
 from crewai.project import CrewBase, agent, crew, task
 from crewai.agents.agent_builder.base_agent import BaseAgent
 from typing import List
 from dotenv import load_dotenv
 import logging
-from auto_mechanic_agent.tools.custom_tool import PDFCreatorTool
-from auto_mechanic_agent.tools.custom_tool import ImageGenTool
-from auto_mechanic_agent.tools.custom_tool import QueryManifestTool
-from auto_mechanic_agent.tools.custom_tool import WebScrapeTool
-from auto_mechanic_agent.tools.custom_tool import ManualDownloaderTool
+
+from auto_mechanic_agent.tools.custom_tool import SQLManualTool, ManualQATool
+from knowledge.vehicle_knowledge_source import ManualIndex
 
 load_dotenv()
 
-
 @CrewBase
-class AutoMechanicAgent():
+class AutoMechanicAgent:
     """AutoMechanicAgent crew"""
 
     agents: List[BaseAgent]
     tasks: List[Task]
-    tools = [PDFCreatorTool(),
-             ImageGenTool(),
-             QueryManifestTool(),
-             WebScrapeTool(),
-             ManualDownloaderTool()]
 
+    # register the SQL lookup tool globally
+    tools = [
+        SQLManualTool(),
+    ]
 
     def __init__(self):
         super().__init__()
         load_dotenv()
         logging.basicConfig(level=logging.INFO)
+
+        # build a filesystem index of all the Toyota manuals
+        self.manual_index = ManualIndex(
+            manuals_dir="knowledge/manuals/Toyota",
+            index_dir="knowledge/manual_index"
+        )
+
+    # ───────────────────────────── Agents ──────────────────────────────
 
     @agent
     def text_parser(self) -> Agent:
@@ -41,26 +46,88 @@ class AutoMechanicAgent():
         )
 
     @agent
-    def mechanic_expert(self) -> Agent:
-        """Provides expert advice on car issues"""
+    def manual_sql(self) -> Agent:
+        """Queries the DuckDB to find the PDF path for a given make/model/year"""
         return Agent(
-            config=self.agents_config["mechanic_expert"],
-            tools=[],  # QueryManifestTool(), WebScrapeTool(), ManualDownloaderTool()
+            config=self.agents_config["manual_sql"],
+            tools=[SQLManualTool()],
             verbose=True,
         )
 
     @agent
-    def pdf_creator(self) -> Agent:
-        """Renders HTML into a PDF file"""
+    def manual_qa_agent(self) -> Agent:
+        """Loads and chunks one PDF, runs RetrievalQA over it"""
+        qa_tool = ManualQATool(
+            manual_index=self.manual_index,
+            chunk_size=800,
+            chunk_overlap=100,
+            top_k=4,
+            model_name="gpt-4o-mini",
+            temperature=0.0,
+        )
         return Agent(
-            config=self.agents_config["pdf_creator"],
+            config=self.agents_config["manual_qa_agent"],
+            tools=[qa_tool],
             verbose=True,
         )
+
+    @agent
+    def mechanic_expert(self) -> Agent:
+        """Provides expert advice on car issues (without manual lookup)"""
+        return Agent(
+            config=self.agents_config["mechanic_expert"],
+            tools=[],
+            verbose=True,
+        )
+
+    @agent
+    def mechanic_supervisor(self) -> Agent:
+        """Supervises the mechanic expert and ensures proper solution generation"""
+        return Agent(
+            config=self.agents_config["mechanic_supervisor"],
+            tools=[],
+            verbose=True,
+        )
+
+    @agent
+    def formatter_agent(self) -> Agent:
+        """Formats the solution into a PDF-friendly format"""
+        return Agent(
+            config=self.agents_config["formatter_agent"],
+            verbose=True,
+        )
+
+
+    # ───────────────────────────── Tasks ──────────────────────────────
 
     @task
     def parse_problem_task(self) -> Task:
         return Task(
             config=self.tasks_config["parse_problem_task"],
+        )
+
+    @task
+    def find_manual_sql_task(self) -> Task:
+        return Task(
+            config=self.tasks_config["find_manual_sql_task"],
+            tools=[SQLManualTool()],
+        )
+
+    @task
+    def lookup_manual_task(self) -> Task:
+        return Task(
+            config=self.tasks_config["lookup_manual_task"],
+            tools=[
+                SQLManualTool(),
+                ManualQATool(
+                    manual_index=self.manual_index,
+                    chunk_size=800,
+                    chunk_overlap=100,
+                    top_k=4,
+                    model_name="gpt-4.1-mini",
+                    temperature=0.0,
+                ),
+            ],
         )
 
     @task
@@ -70,26 +137,49 @@ class AutoMechanicAgent():
         )
 
     @task
-    def format_for_pdf_task(self) -> Task:
+    def enrichment_task(self) -> Task:
         return Task(
-            config=self.tasks_config["format_for_pdf_task"],
+            config=self.tasks_config["enrichment_task"],
         )
 
     @task
-    def generate_pdf_task(self) -> Task:
+    def format_guide_task(self) -> Task:
         return Task(
-            config=self.tasks_config["generate_pdf_task"],
-            tools=[PDFCreatorTool()]  # PDFCreatorTool()
+            config=self.tasks_config["format_guide_task"],
         )
+
+    # ───────────────────────────── Crew Definition ──────────────────────────────
 
     @crew
     def crew(self) -> Crew:
-        """Creates the AutoMechanicAgent crew"""
-
         return Crew(
-            agents=self.agents,
-            tasks=self.tasks,
+            agents=[
+                self.text_parser(),
+                self.manual_sql(),
+                self.manual_qa_agent(),
+                self.mechanic_expert(),
+                self.mechanic_supervisor(),
+                self.formatter_agent(),
+            ],
+            tasks=[
+                self.parse_problem_task(),
+                self.find_manual_sql_task(),
+                self.lookup_manual_task(),
+                self.generate_solution_task(),
+                self.enrichment_task(),
+                self.format_guide_task(),
+            ],
             process=Process.sequential,
-            tools=[PDFCreatorTool(), QueryManifestTool(), WebScrapeTool()],
+            tools=[
+                SQLManualTool(),
+                ManualQATool(
+                    manual_index=self.manual_index,
+                    chunk_size=800,
+                    chunk_overlap=100,
+                    top_k=4,
+                    model_name="gpt-4o-mini",
+                    temperature=0.0,
+                ),
+            ],
             verbose=True,
         )
