@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 import sys
 import warnings
+import json
 
 from datetime import datetime
 
@@ -18,7 +19,7 @@ def run():
     Run the crew.
     """
     inputs = {
-        'problem': 'how to install new brake disk in a 2012 Toyota Camry?',
+        'problem': 'how to install new front bumper in a 2012 Toyota Camry?',
     }
 
     try:

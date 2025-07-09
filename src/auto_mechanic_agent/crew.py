@@ -6,8 +6,7 @@ from crewai.agents.agent_builder.base_agent import BaseAgent
 from typing import List
 from dotenv import load_dotenv
 import logging
-
-from auto_mechanic_agent.tools.custom_tool import SQLManualTool, ManualQATool
+from auto_mechanic_agent.tools.custom_tool import SQLManualTool, ManualQATool, PartsScraperTool
 from knowledge.vehicle_knowledge_source import ManualIndex
 
 load_dotenv()
@@ -22,6 +21,7 @@ class AutoMechanicAgent:
     # register the SQL lookup tool globally
     tools = [
         SQLManualTool(),
+        PartsScraperTool(),
     ]
 
     def __init__(self):
@@ -97,6 +97,14 @@ class AutoMechanicAgent:
             verbose=True,
         )
 
+    @agent
+    def parts_scraper_agent(self) -> Agent:
+        return Agent(
+            config=self.agents_config["parts_scraper_agent"],
+            tools=[PartsScraperTool()],
+            verbose=True,
+        )
+
 
     # ───────────────────────────── Tasks ──────────────────────────────
 
@@ -137,6 +145,13 @@ class AutoMechanicAgent:
         )
 
     @task
+    def scrape_parts_task(self) -> Task:
+        return Task(
+            config=self.tasks_config["scrape_parts_task"],
+            tools=[PartsScraperTool()],
+        )
+
+    @task
     def enrichment_task(self) -> Task:
         return Task(
             config=self.tasks_config["enrichment_task"],
@@ -159,6 +174,7 @@ class AutoMechanicAgent:
                 self.manual_qa_agent(),
                 self.mechanic_expert(),
                 self.mechanic_supervisor(),
+                self.parts_scraper_agent(),
                 self.formatter_agent(),
             ],
             tasks=[
@@ -166,6 +182,7 @@ class AutoMechanicAgent:
                 self.find_manual_sql_task(),
                 self.lookup_manual_task(),
                 self.generate_solution_task(),
+                self.scrape_parts_task(),
                 self.enrichment_task(),
                 self.format_guide_task(),
             ],

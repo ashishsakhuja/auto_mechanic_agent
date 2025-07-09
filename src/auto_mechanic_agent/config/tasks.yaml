@@ -60,6 +60,19 @@ generate_solution_task:
     - parse_problem_task
     - lookup_manual_task
 
+scrape_parts_task:
+  description: |
+    From the solution steps (“{context.generate_solution_task}”), extract
+    all tools and materials mentioned, then use the parts_scraper tool to
+    find online retailer URLs (Amazon, AutoZone, O’Reilly). Return a Markdown
+    list of clickable links. Also explicitly mention which links are the cheapest, Highest rated, or Alternatives 
+    for each tool and material.
+  expected_output: |
+    Markdown list of part URLs, one per line.
+  agent: parts_scraper_agent
+  depends_on:
+    - generate_solution_task
+
 enrichment_task:
   description: |
     Enrich the solution from "{context.generate_solution_task}" with additional context:
@@ -73,7 +86,7 @@ enrichment_task:
 
 format_guide_task:
   description: |
-    Format the enriched solution from "{context.enrichment_task}" into a structured JSON format.
+    Format the enriched solution from "{context.enrichment_task}" and "{context.scrape_parts_task}"into a structured JSON format.
     Ensure it includes:
     - Title
     - Steps
@@ -112,6 +125,30 @@ format_guide_task:
             }
             ...
         ],
+        "Looking for tools and materials?": [
+            {
+                 "Tool1": [
+                    "https://www.amazon.com/..." - Cheapest,
+                    "https://www.autozone.com/..." - Highest rated
+                    "https://www.oreillyauto.com/..." - Alternative
+                    ],
+                 "Tool2": [
+                    "https://www.amazon.com/..." - Alternative,
+                    "https://www.autozone.com/..." - Highest rated, 
+                    "https://www.oreillyauto.com/..." - Cheapest,
+                    ],
+                 "Tool...": [
+                    "https://www.autozone.com/..." - Highest rated,
+                    "https://www.oreillyauto.com/..." - Cheapest,
+                    "https://www.amazon.com/..." - Alternative
+                    ],
+                 "Material1": [
+                    "https://www.oreillyauto.com/..." - Cheapest,
+                    "https://www.autozone.com/..." - Highest rated,
+                    "https://www.amazon.com/..." - Alternative
+                    ],
+                 ...
+            }
         "summary": "Overall summary of the solution"
   agent: formatter_agent
   depends_on:
